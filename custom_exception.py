@@ -6,6 +6,16 @@ class ContentFileMismatchException(EdbyteAIException):
         super(ContentFileMismatchException, self).__init__(message_data)
 
 
+class ContentExtractionIncompleteException(EdbyteAIException):
+    def __init__(self, message_data):
+        super(ContentExtractionIncompleteException, self).__init__(message_data)
+
+
+class ContentPostProcessException(EdbyteAIException):
+    def __init__(self, message_data):
+        super(ContentPostProcessException, self).__init__(message_data)
+
+
 class InvalidContentPathException(EdbyteAIException):
     def __init__(self, message_data):
         super(InvalidContentPathException, self).__init__(message_data)
