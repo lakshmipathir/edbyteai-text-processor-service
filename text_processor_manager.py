@@ -2,6 +2,7 @@ from contextlib import contextmanager
 import json
 import math
 import os
+import re
 from pathlib import PurePosixPath
 from tempfile import TemporaryDirectory
 from urllib.parse import unquote
@@ -32,7 +33,7 @@ PDF_EXTENSIONS = {".pdf"}
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 IMAGE_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp", "image/bmp", "image/tiff"}
 START_TEXT_PRE_PROCESSOR_QUEUE_NAME = "start-text-pre-processor"
-START_TEXT_POST_PROCESS_QUEUE_NAME = "start-text-post-process"
+START_TEXT_POST_PROCESS_QUEUE_NAME = "start-text-post-process.fifo"
 START_SYLLABUS_ANALYSIS_QUEUE_NAME = "start-syallabus-analysis"
 EVENT_TEMP_ROOT_ENV_NAME = "TEXT_PROCESSOR_EVENT_TEMP_ROOT"
 CONTENT_TABLE_NAME = "edbyteai.content"
@@ -82,7 +83,7 @@ class TextProcessManager(EdbyteAIBaseModule):
 
     def __init__(self, is_lambda):
         super().__init__(is_lambda)
-        self._text_extraction_queue_url = None
+        self._text_extraction_queue_url = 'https://sqs.ap-south-1.amazonaws.com/313589909966/start-text-extraction.fifo'
         self._syllabus_analysis_queue_url = None
 
     def get_user_details(self, bearer_token):
@@ -475,17 +476,24 @@ class TextProcessManager(EdbyteAIBaseModule):
         content_file,
         fallback_s3_key=None,
     ):
-        source_name = (
-            content_file.get("file_name")
-            or PurePosixPath(unquote(fallback_s3_key or "")).name
+        source_object_name = (
+            PurePosixPath(unquote(fallback_s3_key or "")).name
             or PurePosixPath(unquote(content_file.get("file_url") or "")).name
+            or content_file.get("file_name")
             or f"content_file_{content_file_id}"
         )
-        text_file_name = f"{PurePosixPath(source_name).stem}.txt"
+        field_name = PurePosixPath(
+            content_file.get("file_name") or source_object_name
+        ).stem
+        field_name = re.sub(
+            r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}-",
+            "",
+            field_name,
+        )
         return (
             f"academic_year_{academic_year_id}/tenant_id_{tenant_id}/"
             f"section_id_{section_id}/course_id_{course_id}/indexing_content/"
-            f"textbooks/extracted/{text_file_name}"
+            f"textbook_processed_data/{source_object_name}/extracted/{field_name}.txt"
         )
 
     @staticmethod
@@ -706,12 +714,16 @@ class TextProcessManager(EdbyteAIBaseModule):
                 "section_id": section_id,
                 "course_id": course_id,
                 "content_file_id": content_file_id,
+                "bucket_name": "edbyteai-dev-content-materials",
                 "content_extraction_id": row["id"],
                 "s3_key": s3_key,
             }
-            response = sqs_client.send_message(
-                QueueUrl=queue_url,
-                MessageBody=json.dumps(message_body),
+            response = self._send_sqs_message(
+                sqs_client=sqs_client,
+                queue_url=queue_url,
+                message_body=message_body,
+                message_group_id=f"content-file-{content_file_id}",
+                message_deduplication_id=f"text-extraction-{content_file_id}-{row['id']}",
             )
             if not response.get("MessageId"):
                 raise SqsMessagePublishException("Failed to publish start-text-extraction message")
@@ -736,18 +748,41 @@ class TextProcessManager(EdbyteAIBaseModule):
                 "section_id": section_id,
                 "course_id": course_id,
                 "content_file_id": content_file_id,
+                "bucket_name":"edbyteai-dev-content-materials",
                 "content_extraction_id": row["id"],
                 "s3_key": row["extracted_chunk_s3_file_url"],
             }
-            response = sqs_client.send_message(
-                QueueUrl=queue_url,
-                MessageBody=json.dumps(message_body),
+            response = self._send_sqs_message(
+                sqs_client=sqs_client,
+                queue_url=queue_url,
+                message_body=message_body,
+                message_group_id=f"content-file-{content_file_id}",
+                message_deduplication_id=f"syllabus-analysis-{content_file_id}-{row['id']}",
             )
             if not response.get("MessageId"):
                 raise SqsMessagePublishException("Failed to publish start-syallabus-analysis message")
             events_raised += 1
 
         return events_raised
+
+    @staticmethod
+    def _send_sqs_message(
+        sqs_client,
+        queue_url,
+        message_body,
+        message_group_id,
+        message_deduplication_id,
+    ):
+        send_parameters = {
+            "QueueUrl": queue_url,
+            "MessageBody": json.dumps(message_body),
+        }
+        if queue_url.lower().endswith(".fifo"):
+            send_parameters.update({
+                "MessageGroupId": message_group_id,
+                "MessageDeduplicationId": message_deduplication_id,
+            })
+        return sqs_client.send_message(**send_parameters)
 
     def _get_text_extraction_queue_url(self):
         if self._text_extraction_queue_url:

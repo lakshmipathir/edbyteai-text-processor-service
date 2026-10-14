@@ -119,15 +119,15 @@ class TestPreProcessorEvent(unittest.TestCase):
             "path": "/exam",
             "method": "POST",
             "token": PRINCIPAL_AUTHORISATION,
-            "queue_name": "start-text-post-process",
+            "queue_name": "start-text-pre-processor",
             "body": {
                 "tenant_id": 1,
                 "academic_year_id": 1,
                 "section_id": 1,
-                "course_id": 1,
-                "content_file_id": 22,
+                "course_id": 2,
+                "content_file_id": 32,
                 "bucket_name": "edbyteai-dev-content-materials",
-                "s3_key": "academic_year_1/tenant_id_1/section_id_1/course_id_1/indexing_content/textbooks/3f1d2ffb-fb13-45eb-b5ff-bfca477f83a7-10th English Maths Part - 1 2026-27.pdf",
+                "s3_key": "academic_year_1/tenant_id_1/section_id_1/course_id_2/indexing_content/textbooks/a93c7a1f-37f0-4be4-b4da-5d7598c27c6c-10th English Science Part -2 2026-27.pdf",
                 
             },
         }
@@ -140,7 +140,7 @@ class TestPreProcessorEvent(unittest.TestCase):
             "path": "/exam",
             "method": "POST",
             "token": PRINCIPAL_AUTHORISATION,
-            "queue_name": "start-text-post-process",
+            "queue_name": "start-text-pre-processor",
             "body": {
                 "tenant_id": 1,
                 "academic_year_id": 1,
@@ -153,6 +153,7 @@ class TestPreProcessorEvent(unittest.TestCase):
             },
         }
         request = build_event_from_params(params)
+        print(json.loads(json.dumps(request)))
         response = lambda_handler(request, context)
         pprint(response)
 
