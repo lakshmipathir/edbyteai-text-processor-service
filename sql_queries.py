@@ -37,6 +37,9 @@ select
     c.file_url,
     c.file_type,
     c.file_name,
+    c.extracted_s3_file_url,
+    c.extracted_s3_file_key,
+    c.status,
     rt.role_name as uploaded_by_role
 from edbyteai.content c
 join edbyteai.users u
@@ -75,9 +78,24 @@ for update
 """
 
 
+sql_update_content_post_process_status = """
+update edbyteai.content
+set status = %(status)s,
+    updated_at = now()
+where id = %(content_file_id)s
+  and tenant_id = %(tenant_id)s
+  and academic_year_id = %(academic_year_id)s
+  and section_id = %(section_id)s
+  and course_id = %(course_id)s
+  and coalesce(is_deleted, false) = false
+"""
+
+
 sql_update_content_text_file_for_post_process = """
 update edbyteai.content
-set file_url = %(text_file_s3_key)s,
+set extracted_s3_file_url = %(extracted_s3_file_url)s,
+    extracted_s3_file_key = %(extracted_s3_file_key)s,
+    status = %(status)s,
     updated_at = now()
 where id = %(content_file_id)s
   and tenant_id = %(tenant_id)s

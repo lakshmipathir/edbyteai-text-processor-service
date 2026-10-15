@@ -140,15 +140,16 @@ class TestPreProcessorEvent(unittest.TestCase):
             "path": "/exam",
             "method": "POST",
             "token": PRINCIPAL_AUTHORISATION,
-            "queue_name": "start-text-pre-processor",
+            "queue_name": "start-text-post-process.fifo",
             "body": {
                 "tenant_id": 1,
                 "academic_year_id": 1,
-                "section_id": 1,
+                "section_id": 2,
                 "course_id": 1,
-                "content_file_id": 22,
+                "content_file_id": 39,
+                "content_extraction_id": 53,
                 "bucket_name": "edbyteai-dev-content-materials",
-                "s3_key": "academic_year_1/tenant_id_1/section_id_1/course_id_1/indexing_content/textbooks/3f1d2ffb-fb13-45eb-b5ff-bfca477f83a7-10th English Maths Part - 1 2026-27.pdf",
+                "s3_key": "academic_year_1/tenant_id_1/section_id_2/course_id_1/indexing_content/textbooks/50117f12-c80f-4090-9c57-602e8e1c4bdc-10th English Maths Part - 1 2026-27.pdf",
 
             },
         }

@@ -2,7 +2,6 @@ from contextlib import contextmanager
 import json
 import math
 import os
-import re
 from pathlib import PurePosixPath
 from tempfile import TemporaryDirectory
 from urllib.parse import unquote
@@ -25,6 +24,7 @@ from sql_queries import (
     sql_get_content_file_for_preprocess,
     sql_lock_content_extractions_for_post_process,
     sql_lock_content_file_for_post_process,
+    sql_update_content_post_process_status,
     sql_update_content_text_file_for_post_process,
 )
 
@@ -38,6 +38,8 @@ START_SYLLABUS_ANALYSIS_QUEUE_NAME = "start-syallabus-analysis"
 EVENT_TEMP_ROOT_ENV_NAME = "TEXT_PROCESSOR_EVENT_TEMP_ROOT"
 CONTENT_TABLE_NAME = "edbyteai.content"
 CONTENT_EXTRACTION_TABLE_NAME = "edbyteai.content_extraction"
+TEXT_POST_PROCESS_IN_PROGRESS_STATUS = "Text post process in-progress"
+TEXT_EXTRACTION_COMPLETE_STATUS = "Text extraction is complete"
 
 
 class PreProcessorMessageModel(BaseModel):
@@ -65,9 +67,9 @@ class PostProcessorMessageModel(BaseModel):
     section_id: int = Field(gt=0)
     course_id: int = Field(gt=0)
     content_file_id: int = Field(gt=0)
-    content_extraction_id: int | None = Field(default=None, gt=0)
-    s3_key: str | None = Field(default=None, min_length=1)
-    bucket_name: str | None = Field(default=None, min_length=1, pattern=r"^\S+$")
+    content_extraction_id: int
+    s3_key: str
+    bucket_name: str
 
     @field_validator("s3_key")
     @classmethod
@@ -339,15 +341,23 @@ class TextProcessManager(EdbyteAIBaseModule):
                     academic_year_id=academic_year_id,
                     section_id=section_id,
                     course_id=course_id,
-                    content_file_id=content_file_id,
-                    content_file=content_file,
-                    fallback_s3_key=s3_key,
+                    s3_key=s3_key,
                 )
 
                 already_processed = self._is_content_post_processed(content_file, text_file_s3_key)
                 syllabus_analysis_events_raised = 0
 
                 if not already_processed:
+                    self._update_content_post_process_status(
+                        tenant_id=tenant_id,
+                        academic_year_id=academic_year_id,
+                        section_id=section_id,
+                        course_id=course_id,
+                        content_file_id=content_file_id,
+                        status=TEXT_POST_PROCESS_IN_PROGRESS_STATUS,
+                    )
+                    self.conn.commit()
+
                     merged_text = self._merge_extracted_chunk_text(
                         bucket_name=bucket_name,
                         extraction_rows=extraction_rows,
@@ -365,15 +375,16 @@ class TextProcessManager(EdbyteAIBaseModule):
                         course_id=course_id,
                         content_file_id=content_file_id,
                         text_file_s3_key=text_file_s3_key,
+                        extracted_s3_file_url=f"s3://{bucket_name}/{text_file_s3_key}",
                     )
-                    syllabus_analysis_events_raised = self._publish_syllabus_analysis_messages(
-                        tenant_id=tenant_id,
-                        academic_year_id=academic_year_id,
-                        section_id=section_id,
-                        course_id=course_id,
-                        content_file_id=content_file_id,
-                        extraction_rows=extraction_rows,
-                    )
+                    # syllabus_analysis_events_raised = self._publish_syllabus_analysis_messages(
+                    #     tenant_id=tenant_id,
+                    #     academic_year_id=academic_year_id,
+                    #     section_id=section_id,
+                    #     course_id=course_id,
+                    #     content_file_id=content_file_id,
+                    #     extraction_rows=extraction_rows,
+                    # )
 
                 self.conn.commit()
             except Exception:
@@ -472,34 +483,29 @@ class TextProcessManager(EdbyteAIBaseModule):
         academic_year_id,
         section_id,
         course_id,
-        content_file_id,
-        content_file,
-        fallback_s3_key=None,
+        s3_key=None,
     ):
-        source_object_name = (
-            PurePosixPath(unquote(fallback_s3_key or "")).name
-            or PurePosixPath(unquote(content_file.get("file_url") or "")).name
-            or content_file.get("file_name")
-            or f"content_file_{content_file_id}"
-        )
-        field_name = PurePosixPath(
-            content_file.get("file_name") or source_object_name
-        ).stem
-        field_name = re.sub(
-            r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}-",
-            "",
-            field_name,
-        )
-        return (
+        source_path = PurePosixPath(s3_key)
+        expected_prefix = PurePosixPath(
             f"academic_year_{academic_year_id}/tenant_id_{tenant_id}/"
             f"section_id_{section_id}/course_id_{course_id}/indexing_content/"
-            f"textbook_processed_data/{source_object_name}/extracted/{field_name}.txt"
+            "textbook_processed_data"
+        )
+        relative_path = source_path.relative_to(expected_prefix)
+        if len(relative_path.parts) < 4 or relative_path.parts[-2] != "chunks":
+            raise InvalidContentPathException(
+                "Post-process s3_key must point to an extracted chunk under extracted/chunks"
+            )
+        return (
+            str(expected_prefix / relative_path.parts[0] / "extracted" / source_path.name)
         )
 
     @staticmethod
     def _is_content_post_processed(content_file, text_file_s3_key):
-        file_url = content_file.get("file_url") or ""
-        return text_file_s3_key in file_url
+        return (
+            content_file.get("extracted_s3_file_key") == text_file_s3_key
+            and content_file.get("status") == TEXT_EXTRACTION_COMPLETE_STATUS
+        )
 
     def _merge_extracted_chunk_text(self, bucket_name, extraction_rows, temp_dir):
         chunks = []
@@ -547,7 +553,37 @@ class TextProcessManager(EdbyteAIBaseModule):
             ContentType="text/plain; charset=utf-8",
         )
 
-    def _update_content_text_file(self, tenant_id, academic_year_id, section_id, course_id, content_file_id, text_file_s3_key):
+    def _update_content_post_process_status(
+        self,
+        tenant_id,
+        academic_year_id,
+        section_id,
+        course_id,
+        content_file_id,
+        status,
+    ):
+        self.execute_query(
+            sql_stmt=sql_update_content_post_process_status,
+            parameters={
+                "tenant_id": tenant_id,
+                "academic_year_id": academic_year_id,
+                "section_id": section_id,
+                "course_id": course_id,
+                "content_file_id": content_file_id,
+                "status": status,
+            },
+        )
+
+    def _update_content_text_file(
+        self,
+        tenant_id,
+        academic_year_id,
+        section_id,
+        course_id,
+        content_file_id,
+        text_file_s3_key,
+        extracted_s3_file_url,
+    ):
         self.execute_query(
             sql_stmt=sql_update_content_text_file_for_post_process,
             parameters={
@@ -556,7 +592,9 @@ class TextProcessManager(EdbyteAIBaseModule):
                 "section_id": section_id,
                 "course_id": course_id,
                 "content_file_id": content_file_id,
-                "text_file_s3_key": text_file_s3_key,
+                "extracted_s3_file_url": extracted_s3_file_url,
+                "extracted_s3_file_key": text_file_s3_key,
+                "status": TEXT_EXTRACTION_COMPLETE_STATUS,
             },
         )
 
